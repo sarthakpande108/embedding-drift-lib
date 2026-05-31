@@ -181,7 +181,7 @@ class DriftAnalyser:
 
     def _diagnose_cause(self, mmd: float, coverage: dict, w_scores: dict) -> str:
         high_mmd          = mmd > self._mmd_thresholds["mild"]
-        high_coverage_gap = coverage["coverage_gap_rate"] > 0.10
+        high_coverage_gap = coverage["coverage_gap_rate"] > self.config.coverage_gap_alert_threshold
         concentrated       = w_scores["concentration"] > 3.0
 
         if high_mmd and concentrated:

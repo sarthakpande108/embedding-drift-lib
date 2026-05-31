@@ -21,8 +21,9 @@ class StratifiedReservoirSampler:
 
     def fit_clusters(self, vectors: np.ndarray) -> None:
         from sklearn.cluster import MiniBatchKMeans
+        actual_clusters = min(self.n_clusters, len(vectors))
         self.cluster_model = MiniBatchKMeans(
-            n_clusters=self.n_clusters,
+            n_clusters=actual_clusters,
             random_state=42,
             batch_size=1000,
             n_init="auto",

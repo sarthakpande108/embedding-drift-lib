@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "embedding-drift-lib"
-version = "0.1.0"
-description = "Detect when your RAG vector index silently drifts from reality — pure Python, no external services"
+version = "0.1.1"
+description = "Detect when your RAG vector index silently drifts from reality — pure Python, no external services."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

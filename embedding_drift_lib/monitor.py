@@ -120,8 +120,8 @@ class DriftMonitor:
             logger.warning("No reference snapshot. Call create_snapshot() first.")
             return None
 
-        if len(self._query_buffer) < 50:
-            logger.debug(f"Buffer too small ({len(self._query_buffer)} vectors, need 50).")
+        if len(self._query_buffer) < self.config.analysis_batch_size:
+            logger.debug(f"Buffer too small ({len(self._query_buffer)} vectors, need {self.config.analysis_batch_size}).")
             return None
 
         self._analysis_running = True
