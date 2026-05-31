@@ -77,6 +77,9 @@ config = DriftConfig(
 )
 ```
 
+> [!TIP]
+> **Tip for Local Testing:** By default, the library only monitors 5% of queries (`sample_rate = 0.05`) to protect production performance. If you are testing the library locally with a small dataset or manual queries, set `sample_rate = 1.0` in your `DriftConfig` to ensure 100% of your test queries are captured!
+
 ## How It Works
 
 ```
