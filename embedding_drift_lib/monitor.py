@@ -5,9 +5,10 @@ Wraps any async embedding function and runs drift analysis in the background.
 No external services required — no Supabase, no alerts, no API keys.
 """
 
-import asyncio
 import functools
 import logging
+from asyncio import create_task
+from collections import deque
 from typing import Callable, Optional
 import numpy as np
 
@@ -53,7 +54,12 @@ class DriftMonitor:
             mmd_warning_threshold=config.mmd_mild_threshold,
         )
         self.snapshot_manager = SnapshotManager(config.snapshot_dir)
-        self._query_buffer: list[np.ndarray] = []
+        # Keep a recent, bounded window even if no baseline exists or analysis fails.
+        # deque drops the oldest observation when the configured capacity is reached.
+        self._query_buffer: deque[np.ndarray] = deque(maxlen=config.max_query_buffer_size)
+        self._dropped_query_vector_count = 0
+        self._snapshot_available: Optional[bool] = None
+        self._analysis_task = None
         self._analysis_running = False
         self._last_report: Optional[DriftReport] = None
 
@@ -72,11 +78,14 @@ class DriftMonitor:
             response = await embed_fn(*args, **kwargs)
             if self.scheduler.should_sample():
                 for vec in self._extract_vectors(response):
-                    self._query_buffer.append(vec)
+                    if len(self._query_buffer) == self._query_buffer.maxlen:
+                        self._dropped_query_vector_count += 1
+                    sample = np.asarray(vec, dtype=np.float32).copy()
+                    self._query_buffer.append(sample)
                     if self.sampler.cluster_model is not None:
-                        self.sampler.add(vec)
+                        self.sampler.add(sample)
             if len(self._query_buffer) >= self.config.analysis_batch_size:
-                asyncio.create_task(self._run_analysis())
+                self._schedule_analysis()
             return response
         return wrapped
 
@@ -94,11 +103,14 @@ class DriftMonitor:
         snapshot_id = self.snapshot_manager.create(vectors, label)
         self.analyser.projector.fit(vectors)
         self.sampler.fit_clusters(vectors)
+        self._snapshot_available = True
+        if len(self._query_buffer) >= self.config.analysis_batch_size:
+            self._schedule_analysis()
         logger.info(f"Snapshot created: {snapshot_id} ({len(vectors)} vectors, label='{label}')")
         return snapshot_id
 
     async def force_analysis(self) -> Optional[DriftReport]:
-        """Manually trigger analysis regardless of buffer size."""
+        """Manually analyze one batch, even when it is smaller than analysis_batch_size."""
         return await self._run_analysis(force=True)
 
     @property
@@ -109,29 +121,57 @@ class DriftMonitor:
     def current_sample_size(self) -> int:
         return len(self._query_buffer)
 
+    @property
+    def dropped_query_vector_count(self) -> int:
+        """Total sampled vectors evicted because the recent-query buffer was full."""
+        return self._dropped_query_vector_count
+
     # ── Internal ───────────────────────────────────────────────────────────
 
+    def _schedule_analysis(self) -> None:
+        """Coalesce triggers into at most one pending background analysis task."""
+        if self._snapshot_available is False:
+            return
+        if self._analysis_task is not None and not self._analysis_task.done():
+            return
+        self._analysis_task = create_task(self._run_analysis())
+
     async def _run_analysis(self, force: bool = False) -> Optional[DriftReport]:
-        if self._analysis_running and not force:
+        # A forced run may flush a partial batch, but it must never overlap another run.
+        if self._analysis_running:
             return None
 
-        reference = self.snapshot_manager.load_latest()
-        if reference is None:
-            logger.warning("No reference snapshot. Call create_snapshot() first.")
+        buffered = len(self._query_buffer)
+        if buffered == 0:
+            logger.debug("No sampled query vectors are available for analysis.")
+            return None
+        if buffered < self.config.analysis_batch_size and not force:
+            logger.debug(
+                f"Buffer too small ({buffered} vectors, "
+                f"need {self.config.analysis_batch_size})."
+            )
+            return None
+        if self._snapshot_available is False:
             return None
 
-        if len(self._query_buffer) < self.config.analysis_batch_size:
-            logger.debug(f"Buffer too small ({len(self._query_buffer)} vectors, need {self.config.analysis_batch_size}).")
-            return None
-
+        batch_size = min(buffered, self.config.analysis_batch_size)
         self._analysis_running = True
         try:
-            current = np.array(self._query_buffer[:self.config.analysis_batch_size])
-            self._query_buffer = self._query_buffer[self.config.analysis_batch_size:]
+            reference = self.snapshot_manager.load_latest()
+            if reference is None:
+                self._snapshot_available = False
+                logger.warning("No reference snapshot. Call create_snapshot() first.")
+                return None
+            self._snapshot_available = True
 
+            # Peek first and only remove after successful analysis. A failed analysis
+            # therefore remains retryable instead of silently discarding its sample.
+            current = np.asarray(list(self._query_buffer)[:batch_size], dtype=np.float32)
             report = self.analyser.analyse(reference, current)
-            self._last_report = report
             self.scheduler.update(report.mmd_score)
+            for _ in range(batch_size):
+                self._query_buffer.popleft()
+            self._last_report = report
 
             logger.info(
                 f"[{self.config.index_name}] drift={report.drift_type} "

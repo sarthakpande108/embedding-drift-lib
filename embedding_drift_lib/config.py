@@ -22,6 +22,7 @@ class DriftConfig:
     sample_rate: float = 0.05
     elevated_sample_rate: float = 0.30
     analysis_batch_size: int = 200
+    max_query_buffer_size: int = 2000
     reservoir_size: int = 2000
     n_clusters: int = 20
 
@@ -42,3 +43,14 @@ class DriftConfig:
         assert 0.0 <= self.elevated_sample_rate <= 1.0, "elevated_sample_rate must be in [0, 1]"
         assert self.pca_components > 0, "pca_components must be positive"
         assert self.n_permutations > 0, "n_permutations must be positive"
+
+        for name, value in (
+            ("analysis_batch_size", self.analysis_batch_size),
+            ("max_query_buffer_size", self.max_query_buffer_size),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.max_query_buffer_size < self.analysis_batch_size:
+            raise ValueError(
+                "max_query_buffer_size must be greater than or equal to analysis_batch_size"
+            )
