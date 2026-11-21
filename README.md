@@ -69,6 +69,7 @@ config = DriftConfig(
     sample_rate                  = 0.05,    # sample 5% of queries (default)
     elevated_sample_rate         = 0.30,    # 30% when drift suspected
     analysis_batch_size          = 200,     # analyse every N queries
+    max_query_buffer_size        = 2000,    # bounded recent-query window
     mmd_mild_threshold           = 0.02,
     mmd_significant_threshold    = 0.08,
     mmd_severe_threshold         = 0.20,
@@ -76,6 +77,8 @@ config = DriftConfig(
     snapshot_dir                 = "./snapshots",
 )
 ```
+
+The monitor retains only the most recent `max_query_buffer_size` sampled vectors. When the buffer is full, the oldest vectors are evicted; `monitor.dropped_query_vector_count` exposes the cumulative number of evictions. This keeps memory bounded if a baseline has not yet been created or analysis repeatedly fails. Background triggers are coalesced, and missing baselines do not cause repeated analysis tasks. `force_analysis()` can analyze a partial batch, and failed analyses leave their batch buffered for retry until normal oldest-first eviction is needed.
 
 > [!TIP]
 > **Tip for Local Testing:** By default, the library only monitors 5% of queries (`sample_rate = 0.05`) to protect production performance. If you are testing the library locally with a small dataset or manual queries, set `sample_rate = 1.0` in your `DriftConfig` to ensure 100% of your test queries are captured!
