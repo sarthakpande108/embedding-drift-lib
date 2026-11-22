@@ -81,7 +81,7 @@ config = DriftConfig(
 The monitor retains only the most recent `max_query_buffer_size` sampled vectors. When the buffer is full, the oldest vectors are evicted; `monitor.dropped_query_vector_count` exposes the cumulative number of evictions. This keeps memory bounded if a baseline has not yet been created or analysis repeatedly fails. Background triggers are coalesced, and missing baselines do not cause repeated analysis tasks. `force_analysis()` can analyze a partial batch, and failed analyses leave their batch buffered for retry until normal oldest-first eviction is needed.
 
 > [!TIP]
-> **Tip for Local Testing:** By default, the library only monitors 5% of queries (`sample_rate = 0.05`) to protect production performance. If you are testing the library locally with a small dataset or manual queries, set `sample_rate = 1.0` in your `DriftConfig` to ensure 100% of your test queries are captured!
+> **Tip for Local Testing:** By default, the library only monitors 5% of queries (`sample_rate = 0.05`) to protect production performance. If you are testing the library locally with a small dataset or manual queries, set `sample_rate = 1.0` in your `DriftConfig` to ensure 100% of your test queries are captured! Sampling is decided independently for each embedding vector returned by the wrapped call, including batched responses; it is not an all-or-none decision per API request.
 
 ## How It Works
 

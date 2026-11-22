@@ -76,14 +76,17 @@ class DriftMonitor:
         @functools.wraps(embed_fn)
         async def wrapped(*args, **kwargs):
             response = await embed_fn(*args, **kwargs)
-            if self.scheduler.should_sample():
-                for vec in self._extract_vectors(response):
-                    if len(self._query_buffer) == self._query_buffer.maxlen:
-                        self._dropped_query_vector_count += 1
-                    sample = np.asarray(vec, dtype=np.float32).copy()
-                    self._query_buffer.append(sample)
-                    if self.sampler.cluster_model is not None:
-                        self.sampler.add(sample)
+            for vec in self._extract_vectors(response):
+                # Sample each returned embedding independently. A batched API
+                # response must not turn the sampling decision into all-or-none.
+                if not self.scheduler.should_sample():
+                    continue
+                if len(self._query_buffer) == self._query_buffer.maxlen:
+                    self._dropped_query_vector_count += 1
+                sample = np.asarray(vec, dtype=np.float32).copy()
+                self._query_buffer.append(sample)
+                if self.sampler.cluster_model is not None:
+                    self.sampler.add(sample)
             if len(self._query_buffer) >= self.config.analysis_batch_size:
                 self._schedule_analysis()
             return response

@@ -171,3 +171,31 @@ async def test_failed_analysis_keeps_batch_available_for_retry(tmp_path):
     assert report is None
     assert monitor.current_sample_size == 2
     assert monitor.dropped_query_vector_count == 0
+
+@pytest.mark.asyncio
+async def test_wrap_samples_each_embedding_in_a_batch_independently(tmp_path):
+    monitor = make_monitor(tmp_path, batch_size=10, max_buffer_size=10)
+    decisions = iter([True, False, True])
+    sampling_calls = []
+
+    def should_sample():
+        sampling_calls.append(True)
+        return next(decisions)
+
+    monitor.scheduler.should_sample = should_sample
+    response = np.array(
+        [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32
+    )
+
+    async def embed():
+        return response
+
+    wrapped = monitor.wrap(embed)
+    assert await wrapped() is response
+
+    assert len(sampling_calls) == 3
+    assert monitor.current_sample_size == 2
+    np.testing.assert_array_equal(
+        np.asarray(list(monitor._query_buffer)),
+        np.array([[1.0, 2.0], [5.0, 6.0]], dtype=np.float32),
+    )
