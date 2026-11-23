@@ -14,6 +14,18 @@ def test_compute_mmd_is_symmetric_and_zero_for_identical_samples():
     )
 
 
+
+def test_kernel_block_mean_chunks_rows_without_changing_the_mean():
+    kernel = np.arange(600 * 700, dtype=np.float64).reshape(600, 700)
+    rows = np.arange(0, 600, 2)
+    columns = np.arange(1, 700, 3)
+
+    actual = mmd._mean_kernel_block(kernel, rows, columns)
+    expected = kernel[np.ix_(rows, columns)].mean()
+
+    assert actual == pytest.approx(expected, abs=1e-10)
+
+
 def test_permutation_test_detects_a_clear_distribution_shift():
     rng = np.random.default_rng(12)
     reference = rng.normal(0, 1, size=(60, 6))

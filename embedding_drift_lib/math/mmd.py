@@ -52,17 +52,33 @@ def _compute_mmd_validated(X: np.ndarray, Y: np.ndarray, gamma: float) -> float:
     return float(max(mmd2, 0.0))
 
 
+def _mean_kernel_block(
+    kernel: np.ndarray,
+    row_indices: np.ndarray,
+    column_indices: np.ndarray,
+    row_chunk_size: int = 256,
+) -> float:
+    """Mean a Gram-matrix block without materializing the full indexed block."""
+    total = 0.0
+    for start in range(0, len(row_indices), row_chunk_size):
+        rows = row_indices[start:start + row_chunk_size]
+        total += float(
+            kernel[np.ix_(rows, column_indices)].sum(dtype=np.float64)
+        )
+    return total / (len(row_indices) * len(column_indices))
+
+
 def _compute_mmd_from_kernel(
     kernel: np.ndarray,
     x_indices: np.ndarray,
     y_indices: np.ndarray,
 ) -> float:
     """Compute biased MMD² from a precomputed pooled Gram matrix."""
-    XX = kernel[np.ix_(x_indices, x_indices)]
-    YY = kernel[np.ix_(y_indices, y_indices)]
-    XY = kernel[np.ix_(x_indices, y_indices)]
+    xx_mean = _mean_kernel_block(kernel, x_indices, x_indices)
+    yy_mean = _mean_kernel_block(kernel, y_indices, y_indices)
+    xy_mean = _mean_kernel_block(kernel, x_indices, y_indices)
 
-    mmd2 = XX.mean() + YY.mean() - 2.0 * XY.mean()
+    mmd2 = xx_mean + yy_mean - 2.0 * xy_mean
     return float(max(mmd2, 0.0))
 
 
