@@ -250,3 +250,32 @@ async def test_wrap_returns_successful_response_when_monitor_capture_fails(tmp_p
     assert await wrapped() is response
     assert monitor.current_sample_size == 0
     assert monitor.capture_error_count == 1
+
+
+@pytest.mark.asyncio
+async def test_create_snapshot_discards_incompatible_prebaseline_samples(tmp_path):
+    config = DriftConfig(
+        index_name="monitor-test",
+        pca_components=2,
+        sample_rate=1.0,
+        analysis_batch_size=2,
+        max_query_buffer_size=8,
+        reservoir_size=8,
+        n_clusters=2,
+        snapshot_dir=str(tmp_path),
+    )
+    monitor = DriftMonitor(config)
+    monitor._query_buffer.extend([
+        np.array([1.0, 2.0, 3.0], dtype=np.float32),
+        np.array([4.0, 5.0], dtype=np.float32),
+    ])
+    baseline = np.random.default_rng(7).normal(size=(10, 2)).astype(np.float32)
+
+    await monitor.create_snapshot(baseline, label="two-dimensional-baseline")
+
+    assert monitor.current_sample_size == 1
+    assert monitor.invalid_query_vector_count == 1
+    np.testing.assert_array_equal(
+        np.asarray(list(monitor._query_buffer)),
+        np.array([[4.0, 5.0]], dtype=np.float32),
+    )

@@ -146,6 +146,22 @@ class DriftMonitor:
         snapshot_id = self.snapshot_manager.create(vectors, label)
         self.analyser.projector.fit(vectors)
         self.sampler.fit_clusters(vectors)
+
+        # Calls may have been captured before the first baseline existed.
+        # Discard samples that cannot be projected in the newly fitted space.
+        expected_dim = self.analyser.projector.reference_dim
+        compatible = [
+            sample for sample in self._query_buffer
+            if sample.ndim == 1
+            and sample.shape[0] == expected_dim
+            and np.isfinite(sample).all()
+        ]
+        dropped = len(self._query_buffer) - len(compatible)
+        if dropped:
+            self._invalid_query_vector_count += dropped
+            self._query_buffer.clear()
+            self._query_buffer.extend(compatible)
+
         self._snapshot_available = True
         if len(self._query_buffer) >= self.config.analysis_batch_size:
             self._schedule_analysis()
