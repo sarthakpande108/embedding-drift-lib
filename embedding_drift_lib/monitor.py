@@ -91,7 +91,8 @@ class DriftMonitor:
                             raise ValueError("expected a non-empty 1D embedding vector")
                         if not np.isfinite(sample).all():
                             raise ValueError("embedding vector contains non-finite values")
-                        expected_dim = self.analyser.projector.reference_dim
+                        projector = getattr(self.analyser, "projector", None)
+                        expected_dim = getattr(projector, "reference_dim", None)
                         if expected_dim is not None and sample.shape[0] != expected_dim:
                             raise ValueError(
                                 f"embedding dimension mismatch: expected {expected_dim}, "
