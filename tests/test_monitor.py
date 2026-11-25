@@ -199,3 +199,54 @@ async def test_wrap_samples_each_embedding_in_a_batch_independently(tmp_path):
         np.asarray(list(monitor._query_buffer)),
         np.array([[1.0, 2.0], [5.0, 6.0]], dtype=np.float32),
     )
+
+
+@pytest.mark.asyncio
+async def test_wrap_skips_invalid_vectors_and_isolates_sampler_errors(tmp_path):
+    monitor = make_monitor(tmp_path, batch_size=10, max_buffer_size=10)
+    monitor.analyser.projector.reference_dim = 2
+    monitor.sampler.cluster_model = object()
+
+    def fail_sampler(vector):
+        raise RuntimeError("temporary sampler failure")
+
+    monitor.sampler.add = fail_sampler
+    response = [
+        np.array([1.0, 2.0], dtype=np.float32),
+        np.array([np.nan, 3.0], dtype=np.float32),
+        np.array([4.0, 5.0, 6.0], dtype=np.float32),
+    ]
+
+    async def embed():
+        return response
+
+    wrapped = monitor.wrap(embed)
+    assert await wrapped() is response
+
+    assert monitor.current_sample_size == 1
+    assert monitor.invalid_query_vector_count == 2
+    assert monitor.sampler_error_count == 1
+    assert monitor.capture_error_count == 0
+    np.testing.assert_array_equal(
+        np.asarray(list(monitor._query_buffer)),
+        np.array([[1.0, 2.0]], dtype=np.float32),
+    )
+
+
+@pytest.mark.asyncio
+async def test_wrap_returns_successful_response_when_monitor_capture_fails(tmp_path):
+    monitor = make_monitor(tmp_path, batch_size=10, max_buffer_size=10)
+
+    def fail_sampling():
+        raise RuntimeError("temporary scheduler failure")
+
+    monitor.scheduler.should_sample = fail_sampling
+    response = np.array([[1.0, 2.0]], dtype=np.float32)
+
+    async def embed():
+        return response
+
+    wrapped = monitor.wrap(embed)
+    assert await wrapped() is response
+    assert monitor.current_sample_size == 0
+    assert monitor.capture_error_count == 1
