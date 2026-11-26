@@ -58,6 +58,9 @@ class DriftMonitor:
         # deque drops the oldest observation when the configured capacity is reached.
         self._query_buffer: deque[np.ndarray] = deque(maxlen=config.max_query_buffer_size)
         self._dropped_query_vector_count = 0
+        self._invalid_query_vector_count = 0
+        self._sampler_error_count = 0
+        self._capture_error_count = 0
         self._snapshot_available: Optional[bool] = None
         self._analysis_task = None
         self._analysis_running = False
@@ -76,16 +79,57 @@ class DriftMonitor:
         @functools.wraps(embed_fn)
         async def wrapped(*args, **kwargs):
             response = await embed_fn(*args, **kwargs)
-            if self.scheduler.should_sample():
+            try:
                 for vec in self._extract_vectors(response):
+                    # Sample each returned embedding independently. A batched API
+                    # response must not turn the sampling decision into all-or-none.
+                    if not self.scheduler.should_sample():
+                        continue
+                    try:
+                        sample = np.asarray(vec, dtype=np.float32)
+                        if sample.ndim != 1 or sample.size == 0:
+                            raise ValueError("expected a non-empty 1D embedding vector")
+                        if not np.isfinite(sample).all():
+                            raise ValueError("embedding vector contains non-finite values")
+                        projector = getattr(self.analyser, "projector", None)
+                        expected_dim = getattr(projector, "reference_dim", None)
+                        if expected_dim is not None and sample.shape[0] != expected_dim:
+                            raise ValueError(
+                                f"embedding dimension mismatch: expected {expected_dim}, "
+                                f"got {sample.shape[0]}"
+                            )
+                    except (TypeError, ValueError, OverflowError) as exc:
+                        self._invalid_query_vector_count += 1
+                        logger.warning("Skipping invalid sampled embedding vector: %s", exc)
+                        continue
+
+                    sample = sample.copy()
+                    # The reservoir is auxiliary to the recent analysis window.
+                    # A sampler failure must not break the caller's successful
+                    # embedding request or prevent the valid vector being buffered.
+                    if self.sampler.cluster_model is not None:
+                        try:
+                            self.sampler.add(sample)
+                        except Exception:
+                            self._sampler_error_count += 1
+                            logger.exception(
+                                "Stratified reservoir sampler failed; retaining vector "
+                                "in the recent analysis window."
+                            )
+
                     if len(self._query_buffer) == self._query_buffer.maxlen:
                         self._dropped_query_vector_count += 1
-                    sample = np.asarray(vec, dtype=np.float32).copy()
                     self._query_buffer.append(sample)
-                    if self.sampler.cluster_model is not None:
-                        self.sampler.add(sample)
-            if len(self._query_buffer) >= self.config.analysis_batch_size:
-                self._schedule_analysis()
+
+                if len(self._query_buffer) >= self.config.analysis_batch_size:
+                    self._schedule_analysis()
+            except Exception:
+                # Monitoring is best-effort and must never turn a successful
+                # provider response into an application-level embedding failure.
+                self._capture_error_count += 1
+                logger.exception(
+                    "Embedding drift capture failed; returning the original response unchanged."
+                )
             return response
         return wrapped
 
@@ -103,6 +147,22 @@ class DriftMonitor:
         snapshot_id = self.snapshot_manager.create(vectors, label)
         self.analyser.projector.fit(vectors)
         self.sampler.fit_clusters(vectors)
+
+        # Calls may have been captured before the first baseline existed.
+        # Discard samples that cannot be projected in the newly fitted space.
+        expected_dim = self.analyser.projector.reference_dim
+        compatible = [
+            sample for sample in self._query_buffer
+            if sample.ndim == 1
+            and sample.shape[0] == expected_dim
+            and np.isfinite(sample).all()
+        ]
+        dropped = len(self._query_buffer) - len(compatible)
+        if dropped:
+            self._invalid_query_vector_count += dropped
+            self._query_buffer.clear()
+            self._query_buffer.extend(compatible)
+
         self._snapshot_available = True
         if len(self._query_buffer) >= self.config.analysis_batch_size:
             self._schedule_analysis()
@@ -125,6 +185,21 @@ class DriftMonitor:
     def dropped_query_vector_count(self) -> int:
         """Total sampled vectors evicted because the recent-query buffer was full."""
         return self._dropped_query_vector_count
+
+    @property
+    def invalid_query_vector_count(self) -> int:
+        """Total sampled vectors skipped because they were malformed or incompatible."""
+        return self._invalid_query_vector_count
+
+    @property
+    def sampler_error_count(self) -> int:
+        """Total auxiliary reservoir-sampler failures; valid vectors remain buffered."""
+        return self._sampler_error_count
+
+    @property
+    def capture_error_count(self) -> int:
+        """Total unexpected monitoring errors isolated from successful embedding calls."""
+        return self._capture_error_count
 
     # ── Internal ───────────────────────────────────────────────────────────
 
