@@ -52,6 +52,36 @@ def _compute_mmd_validated(X: np.ndarray, Y: np.ndarray, gamma: float) -> float:
     return float(max(mmd2, 0.0))
 
 
+def _mean_kernel_block(
+    kernel: np.ndarray,
+    row_indices: np.ndarray,
+    column_indices: np.ndarray,
+    row_chunk_size: int = 256,
+) -> float:
+    """Mean a Gram-matrix block without materializing the full indexed block."""
+    total = 0.0
+    for start in range(0, len(row_indices), row_chunk_size):
+        rows = row_indices[start:start + row_chunk_size]
+        total += float(
+            kernel[np.ix_(rows, column_indices)].sum(dtype=np.float64)
+        )
+    return total / (len(row_indices) * len(column_indices))
+
+
+def _compute_mmd_from_kernel(
+    kernel: np.ndarray,
+    x_indices: np.ndarray,
+    y_indices: np.ndarray,
+) -> float:
+    """Compute biased MMD² from a precomputed pooled Gram matrix."""
+    xx_mean = _mean_kernel_block(kernel, x_indices, x_indices)
+    yy_mean = _mean_kernel_block(kernel, y_indices, y_indices)
+    xy_mean = _mean_kernel_block(kernel, x_indices, y_indices)
+
+    mmd2 = xx_mean + yy_mean - 2.0 * xy_mean
+    return float(max(mmd2, 0.0))
+
+
 def compute_mmd(
     X: np.ndarray,
     Y: np.ndarray,
@@ -86,9 +116,9 @@ def is_drift_significant(
     Test whether the observed MMD is larger than expected under equal distributions.
 
     The RBF bandwidth is estimated once from the pooled, label-independent sample
-    and held fixed for the observed statistic and every permutation. Re-estimating
-    it after shuffling labels changes the test statistic between permutations and
-    does not produce a valid permutation null distribution.
+    and held fixed for the observed statistic and every permutation. The pooled
+    Gram matrix is also computed once and reused by every permutation, avoiding
+    repeated pairwise-distance and kernel evaluations.
 
     The returned Monte Carlo p-value uses the plus-one correction, so it can never
     be zero merely because the finite set of permutations did not exceed the
@@ -118,16 +148,21 @@ def is_drift_significant(
     combined = np.vstack((X, Y))
     n_x = len(X)
     gamma = _median_heuristic_gamma(combined)
-    observed_mmd = _compute_mmd_validated(X, Y, gamma)
+    kernel = rbf_kernel(combined, combined, gamma=gamma)
+
+    all_indices = np.arange(len(combined))
+    observed_mmd = _compute_mmd_from_kernel(
+        kernel, all_indices[:n_x], all_indices[n_x:]
+    )
 
     rng = np.random.default_rng(random_state)
     null_mmds = np.empty(n_permutations, dtype=np.float64)
 
     for i in range(n_permutations):
-        permuted = combined[rng.permutation(len(combined))]
-        X_perm = permuted[:n_x]
-        Y_perm = permuted[n_x:]
-        null_mmds[i] = _compute_mmd_validated(X_perm, Y_perm, gamma)
+        permuted_indices = rng.permutation(len(combined))
+        null_mmds[i] = _compute_mmd_from_kernel(
+            kernel, permuted_indices[:n_x], permuted_indices[n_x:]
+        )
 
     exceedances = int(np.count_nonzero(null_mmds >= observed_mmd))
     p_value = (exceedances + 1) / (n_permutations + 1)
