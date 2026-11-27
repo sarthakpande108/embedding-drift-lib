@@ -112,8 +112,14 @@ class DriftAnalyser:
                 f"Dimension mismatch: reference={reference.shape[1]}, current={current.shape[1]}"
             )
 
-        if not self.projector.fitted:
-            self.projector.fit(reference)
+        # A permutation test requires a representation selected without group
+        # labels. Fitting PCA on reference alone leaks the observed assignment
+        # into the transform and can distort the null distribution. Fit once on
+        # the pooled observations, then keep this transform fixed for all
+        # permutations inside is_drift_significant().
+        pooled = np.concatenate((reference, current), axis=0)
+        self.projector = DriftProjector(n_components=self.config.pca_components)
+        self.projector.fit(pooled)
 
         ref_proj = self.projector.project(reference)
         cur_proj = self.projector.project(current)
